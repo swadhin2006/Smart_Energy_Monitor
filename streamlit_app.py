@@ -95,6 +95,7 @@ def _auto_train():
     })
 
     # Feature engineering
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
     df['hour']        = df['timestamp'].dt.hour
     df['day_of_week'] = df['timestamp'].dt.dayofweek
     df['month']       = df['timestamp'].dt.month
@@ -183,7 +184,13 @@ def load_data():
     for p in [os.path.join(BASE, "energy_data_processed.csv"),
               os.path.join(os.getcwd(), "energy_data_processed.csv")]:
         if os.path.exists(p):
-            return pd.read_csv(p, parse_dates=['timestamp'])
+            df = pd.read_csv(p)
+            # Force datetime parse — parse_dates arg can silently fail on Cloud
+            df['timestamp'] = pd.to_datetime(df['timestamp'], utc=False, errors='coerce')
+            # Ensure hour column exists (needed by several pages)
+            if 'hour' not in df.columns:
+                df['hour'] = df['timestamp'].dt.hour
+            return df
     return None
 
 df = load_data()
@@ -330,7 +337,7 @@ def generate_pdf_report(df_in: pd.DataFrame, budget: float) -> bytes:
     pdf.set_font("Helvetica", "", 10)
     pdf.set_text_color(80, 80, 80)
     pdf.cell(0, 6, _safe(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}  |  "
-                   f"Period: {df_in['timestamp'].min().date()} to {df_in['timestamp'].max().date()}"),
+                   f"Period: {pd.to_datetime(df_in['timestamp'].min()).date()} to {pd.to_datetime(df_in['timestamp'].max()).date()}"),
              new_x="LMARGIN", new_y="NEXT", align="C")
     pdf.ln(5)
 
@@ -491,7 +498,8 @@ if 'alert_threshold_w' not in st.session_state:
 
 # Live budget progress
 if df is not None:
-    cur_month = df['timestamp'].max().strftime('%Y-%m')
+    ts_max    = pd.to_datetime(df['timestamp'].max())
+    cur_month = ts_max.strftime('%Y-%m')
     df_month  = df[df['timestamp'].dt.to_period('M').astype(str) == cur_month]
     spent     = float(df_month['cost_inr'].sum())
     budget    = st.session_state['budget']
@@ -547,7 +555,7 @@ if page == "📊 Dashboard":
     st.markdown("")
     budget = st.session_state['budget']
     if df is not None:
-        cur_month = df['timestamp'].max().strftime('%Y-%m')
+        cur_month = pd.to_datetime(df['timestamp'].max()).strftime('%Y-%m')
         spent = float(df[df['timestamp'].dt.to_period('M').astype(str) == cur_month]['cost_inr'].sum())
         if budget > 0 and spent >= budget:
             st.error(f"🚨 **Budget Exceeded!** Spent ₹{spent:.2f} of ₹{budget:.2f} budget this month.")
