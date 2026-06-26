@@ -1,13 +1,13 @@
 """
 Smart IoT Energy Meter — Full Dashboard
 Features:
-  1. Dashboard           — live metrics, trends
-  2. Appliance Detector  — rule-based NILM power signature
-  3. Anomaly Detector    — Isolation Forest ML
-  4. Energy Forecast     — XGBoost ML
-  5. Analytics           — monthly, shift-wise, cost
-  6. Alerts & Budget     — threshold alerts + email
-  7. Audit Report        — PDF export
+  1. Dashboard           - live metrics, trends
+  2. Appliance Detector  - rule-based NILM power signature
+  3. Anomaly Detector    - Isolation Forest ML
+  4. Energy Forecast     - XGBoost ML
+  5. Analytics           - monthly, shift-wise, cost
+  6. Alerts & Budget     - threshold alerts + email
+  7. Audit Report        - PDF export
 """
 
 import streamlit as st
@@ -30,13 +30,138 @@ st.set_page_config(
 )
 
 API_URL = "http://localhost:8000"
-BASE    = r"C:\Users\SWADHIN\OneDrive\Desktop\Smart Energy"
+
+# Resolve BASE path — works locally AND on Streamlit Cloud
 try:
-    _d = os.path.dirname(os.path.abspath(__file__))
-    if os.path.exists(os.path.join(_d, "energy_forecast_model.pkl")):
-        BASE = _d
+    BASE = os.path.dirname(os.path.abspath(__file__))
 except Exception:
-    pass
+    BASE = os.getcwd()
+
+# ── Auto-train if models are missing (runs on Streamlit Cloud first boot) ─────
+def _auto_train():
+    """Generate data and train models if pkl files don't exist."""
+    model_path = os.path.join(BASE, "energy_forecast_model.pkl")
+    if os.path.exists(model_path):
+        return  # already trained
+
+    from sklearn.model_selection import train_test_split
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.ensemble import IsolationForest
+    from xgboost import XGBRegressor
+    import warnings
+    warnings.filterwarnings('ignore')
+
+    np.random.seed(42)
+
+    # Generate data
+    n_days, freq_minutes = 180, 15
+    periods    = int(n_days * 24 * 60 / freq_minutes)
+    timestamps = pd.date_range(start='2025-01-01', periods=periods, freq=f'{freq_minutes}min')
+    hour  = timestamps.hour.to_numpy()
+    dow   = timestamps.dayofweek.to_numpy()
+    month = timestamps.month.to_numpy()
+
+    voltage = 220 + np.random.normal(0, 3, periods) + 2 * np.sin(2 * np.pi * hour / 24)
+    base_i  = (0.5
+               + 1.5 * ((hour >= 7)  & (hour <= 9)).astype(float)
+               + 2.0 * ((hour >= 18) & (hour <= 22)).astype(float)
+               + 0.3 * (dow >= 5).astype(float)
+               + 0.2 * ((month >= 5) & (month <= 8)).astype(float))
+    current      = base_i + np.abs(np.random.normal(0, 0.3, periods))
+    power_factor = np.random.uniform(0.85, 0.99, periods)
+    power        = voltage * current * power_factor
+    energy_kwh   = power * (freq_minutes / 60) / 1000
+    cost         = energy_kwh * 7.0
+    temperature  = 25 + 8 * np.sin(2 * np.pi * (month - 3) / 12) + np.random.normal(0, 1.5, periods)
+
+    anomaly_idx  = np.random.choice(periods, size=int(0.02 * periods), replace=False)
+    anomaly_type = np.random.choice(['voltage_spike','current_surge','dropout'], size=len(anomaly_idx))
+    is_anomaly   = np.zeros(periods, dtype=int)
+    for idx, atype in zip(anomaly_idx, anomaly_type):
+        is_anomaly[idx] = 1
+        if atype == 'voltage_spike':
+            voltage[idx] *= np.random.uniform(1.15, 1.30)
+        elif atype == 'current_surge':
+            current[idx] *= np.random.uniform(2.0, 4.0)
+        else:
+            voltage[idx] = 0.0; current[idx] = 0.0
+
+    df = pd.DataFrame({
+        'timestamp': timestamps, 'voltage_v': np.round(voltage,2),
+        'current_a': np.round(current,3), 'power_w': np.round(power,2),
+        'energy_kwh': np.round(energy_kwh,4), 'power_factor': np.round(power_factor,3),
+        'temperature_c': np.round(temperature,1), 'cost_inr': np.round(cost,4),
+        'is_anomaly': is_anomaly
+    })
+
+    # Feature engineering
+    df['hour']        = df['timestamp'].dt.hour
+    df['day_of_week'] = df['timestamp'].dt.dayofweek
+    df['month']       = df['timestamp'].dt.month
+    df['is_weekend']  = (df['day_of_week'] >= 5).astype(int)
+    df['is_peak_hour']= df['hour'].isin([7,8,9,18,19,20,21,22]).astype(int)
+    df['hour_sin']    = np.sin(2*np.pi*df['hour']/24)
+    df['hour_cos']    = np.cos(2*np.pi*df['hour']/24)
+    df['month_sin']   = np.sin(2*np.pi*df['month']/12)
+    df['month_cos']   = np.cos(2*np.pi*df['month']/12)
+    df['apparent_power']     = df['voltage_v'] * df['current_a']
+    df['reactive_power']     = df['apparent_power'] * np.sqrt(np.maximum(1 - df['power_factor']**2, 0))
+    df['power_roll_mean_4']  = df['power_w'].rolling(4,  min_periods=1).mean()
+    df['power_roll_mean_24'] = df['power_w'].rolling(24, min_periods=1).mean()
+    df['power_roll_std_4']   = df['power_w'].rolling(4,  min_periods=1).std().fillna(0)
+    df['energy_lag_1']       = df['energy_kwh'].shift(1).fillna(0)
+    df['energy_lag_4']       = df['energy_kwh'].shift(4).fillna(0)
+    df['energy_lag_96']      = df['energy_kwh'].shift(96).fillna(0)
+
+    # Forecast model
+    FORECAST_FEATURES = [
+        'voltage_v','current_a','power_factor','temperature_c',
+        'hour_sin','hour_cos','month_sin','month_cos',
+        'is_weekend','is_peak_hour','apparent_power','reactive_power',
+        'power_roll_mean_4','power_roll_mean_24','power_roll_std_4',
+        'energy_lag_1','energy_lag_4','energy_lag_96'
+    ]
+    X = df[FORECAST_FEATURES].values
+    y = df['energy_kwh'].values
+    X_tr, X_te, y_tr, _ = train_test_split(X, y, test_size=0.2, shuffle=False)
+    scaler = StandardScaler()
+    X_tr_s = scaler.fit_transform(X_tr)
+    X_te_s = scaler.transform(X_te)
+    xgb = XGBRegressor(n_estimators=200, learning_rate=0.05, max_depth=6,
+                       subsample=0.8, colsample_bytree=0.8, random_state=42,
+                       n_jobs=-1, verbosity=0)
+    xgb.fit(X_tr_s, y_tr)
+    joblib.dump(xgb,    os.path.join(BASE, 'energy_forecast_model.pkl'))
+    joblib.dump(scaler, os.path.join(BASE, 'energy_forecast_scaler.pkl'))
+    joblib.dump(FORECAST_FEATURES, os.path.join(BASE, 'forecast_features.pkl'))
+
+    # Anomaly model
+    ANOMALY_FEATURES = ['voltage_v','current_a','power_w','power_factor',
+                        'apparent_power','reactive_power','power_roll_std_4']
+    X_an  = df[ANOMALY_FEATURES].values
+    asc   = StandardScaler()
+    X_ans = asc.fit_transform(X_an)
+    iso   = IsolationForest(n_estimators=200, contamination=0.02, random_state=42, n_jobs=-1)
+    iso.fit(X_ans)
+    raw_pred  = iso.predict(X_ans)
+    anom_pred = (raw_pred == -1).astype(int)
+    scores    = -iso.score_samples(X_ans)
+    joblib.dump(iso,  os.path.join(BASE, 'anomaly_model.pkl'))
+    joblib.dump(asc,  os.path.join(BASE, 'anomaly_scaler.pkl'))
+    joblib.dump(ANOMALY_FEATURES, os.path.join(BASE, 'anomaly_features.pkl'))
+
+    # Save processed data
+    df['anomaly_pred']  = anom_pred
+    df['anomaly_score'] = np.round(scores, 4)
+    df['year_month']    = df['timestamp'].dt.to_period('M').astype(str)
+    df.to_csv(os.path.join(BASE, 'energy_data_processed.csv'), index=False)
+    df[['timestamp','voltage_v','current_a','power_w','energy_kwh',
+        'power_factor','temperature_c','cost_inr','is_anomaly']].to_csv(
+        os.path.join(BASE, 'energy_data.csv'), index=False)
+
+# Run auto-train (safe to call every time — skips if models exist)
+with st.spinner("Initialising models... (first run takes ~30 seconds)"):
+    _auto_train()
 
 # ── Load models ───────────────────────────────────────────────────────────────
 @st.cache_resource
