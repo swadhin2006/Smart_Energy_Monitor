@@ -1156,14 +1156,37 @@ elif page == "🔔 Alerts & Budget":
     # ── Email alerts ──────────────────────────────────────────────────────────
     with tab_email:
         st.subheader("📧 Email Alert Configuration")
-        st.info("Uses Gmail SMTP. Enable 'App Passwords' in your Google account settings.")
+        
+        # Gmail setup instructions
+        with st.expander("❓ **How to set up Gmail App Password** (Click to expand)", expanded=False):
+            st.markdown("""
+            ### Gmail SMTP Requires an App Password (not your regular password)
+            
+            **Step 1: Enable 2-Step Verification**
+            1. Go to [Google Account Security](https://myaccount.google.com/security)
+            2. Select "2-Step Verification" and complete setup
+            
+            **Step 2: Generate App Password**
+            1. Go to [App Passwords](https://myaccount.google.com/apppasswords)
+            2. Select "Mail" and "Windows Computer"
+            3. Google will generate a **16-character password**
+            4. Copy it **without spaces**
+            
+            **Step 3: Use in this form**
+            - Email: your-gmail@gmail.com
+            - App Password: paste the 16-char password here
+            - SMTP Host: smtp.gmail.com
+            - SMTP Port: 465
+            
+            ⚠️ **Do NOT use your regular Gmail password** — it will fail.
+            """)
 
         with st.form("email_form"):
             col1, col2 = st.columns(2)
             with col1:
                 sender_email   = st.text_input("Your Gmail", placeholder="you@gmail.com")
                 app_password   = st.text_input("App Password", type="password",
-                                               placeholder="16-char app password")
+                                               placeholder="16-char app password (no spaces)")
             with col2:
                 to_email       = st.text_input("Send alert to", placeholder="recipient@email.com")
                 alert_type     = st.selectbox("Alert Type", [
@@ -1213,8 +1236,22 @@ elif page == "🔔 Alerts & Budget":
                     st.success(f"✅ {msg}")
                 else:
                     st.error(f"❌ Failed: {msg}")
-                    st.info("Make sure you're using an **App Password**, not your regular Gmail password. "
-                            "Go to Google Account → Security → 2-Step Verification → App Passwords.")
+                    st.error("""
+                    **Email failed?** Common reasons:
+                    
+                    1. **Using regular Gmail password** ❌
+                       - Get an App Password: [Google Account → Apppasswords](https://myaccount.google.com/apppasswords)
+                       - Select "Mail" → "Windows Computer" → copy 16-char password
+                    
+                    2. **Gmail 2-Step Verification not enabled** ❌
+                       - Enable it first: [Google Security](https://myaccount.google.com/security)
+                    
+                    3. **Spaces in app password** ❌
+                       - Paste the password **without any spaces**
+                    
+                    4. **Gmail not allowing less secure apps** ❌
+                       - If using older account, enable: [Less Secure Apps](https://myaccount.google.com/lesssecureapps)
+                    """, icon="⚠️")
 
     # ── Recommendations ────────────────────────────────────────────────────────
     with tab_recs:
