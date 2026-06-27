@@ -179,18 +179,46 @@ def load_models():
 forecast_model, forecast_scaler, anomaly_model, anomaly_scaler, MODELS_OK = load_models()
 
 # ── Load data ─────────────────────────────────────────────────────────────────
+def _read_csv_safely(path: str) -> pd.DataFrame:
+    """Read CSV data with a fallback strategy that tolerates malformed rows."""
+    last_error = None
+    candidates = [
+        {"encoding": "utf-8-sig"},
+        {"encoding": "utf-8", "engine": "python", "on_bad_lines": "skip"},
+        {"encoding": "latin-1", "engine": "python", "on_bad_lines": "skip"},
+    ]
+    for kwargs in candidates:
+        try:
+            return pd.read_csv(path, **kwargs)
+        except Exception as exc:
+            last_error = exc
+    raise last_error
+
+
 @st.cache_data
 def load_data():
     for p in [os.path.join(BASE, "energy_data_processed.csv"),
               os.path.join(os.getcwd(), "energy_data_processed.csv")]:
         if os.path.exists(p):
-            df = pd.read_csv(p)
-            # Force datetime parse — parse_dates arg can silently fail on Cloud
-            df['timestamp'] = pd.to_datetime(df['timestamp'], utc=False, errors='coerce')
-            # Ensure hour column exists (needed by several pages)
-            if 'hour' not in df.columns:
-                df['hour'] = df['timestamp'].dt.hour
-            return df
+            try:
+                df = _read_csv_safely(p)
+                # Force datetime parse — parse_dates arg can silently fail on Cloud
+                df['timestamp'] = pd.to_datetime(df['timestamp'], utc=False, errors='coerce')
+                # Ensure hour column exists (needed by several pages)
+                if 'hour' not in df.columns:
+                    df['hour'] = df['timestamp'].dt.hour
+                return df
+            except Exception as exc:
+                print(f"Warning: unable to read {p}: {exc}")
+                try:
+                    _auto_train()
+                    df = _read_csv_safely(p)
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], utc=False, errors='coerce')
+                    if 'hour' not in df.columns:
+                        df['hour'] = df['timestamp'].dt.hour
+                    return df
+                except Exception as retry_exc:
+                    print(f"Warning: auto-training fallback also failed: {retry_exc}")
     return None
 
 df = load_data()
