@@ -88,11 +88,19 @@ streamlit run streamlit_app.py
 
 Open → **http://localhost:8501**
 
-### 6. (Optional) Run FastAPI backend
+### 6. (Optional) Run FastAPI backend locally
+If you also want the API endpoints, install FastAPI and Uvicorn separately:
 ```bash
-uvicorn app:app --reload
+pip install fastapi uvicorn pydantic
+uvicorn backend_app:app --reload
 ```
 API docs → **http://localhost:8000/docs**
+
+### Streamlit Cloud deployment
+- Push this repository to GitHub.
+- In Streamlit Community Cloud, create a new app and select this repo.
+- Set the main file to `streamlit_app.py`.
+- Ensure `requirements.txt` and `runtime.txt` are included.
 
 ---
 
